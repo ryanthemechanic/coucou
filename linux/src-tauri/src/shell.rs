@@ -93,3 +93,32 @@ pub fn pointer() -> Option<Pointer> {
     let (found, x, y, mods): (bool, f64, f64, u32) = call("Pointer", (pid(),))?;
     found.then_some(Pointer { x, y, left_down: mods & BUTTON1_MASK != 0 })
 }
+
+/// idle | working | attention — the colour of the Mochi button in the top bar.
+pub fn set_status(status: &str) {
+    let _ = call::<(), _>("SetStatus", (pid(), status.to_string()));
+}
+
+/// Forwards the top-bar button's `Activated(pid, "hover" | "click")` signal to the island as
+/// `shell` events. Runs on its own connection and thread; blocks in the D-Bus
+/// read loop, so it costs nothing while nobody touches the button.
+pub fn listen(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    std::thread::spawn(move || {
+        let Ok(conn) = Connection::new_session() else { return };
+        let rule = dbus::message::MatchRule::new_signal(IFACE, "Activated").with_path(PATH);
+        let handler = conn.add_match(rule, move |(pid, what): (u32, String), _, _| {
+            if pid == std::process::id() {
+                let _ = app.emit_to(crate::island::WINDOW_LABEL, "shell", what);
+            }
+            true
+        });
+        if handler.is_err() {
+            crate::log::line("cannot listen to the top-bar button");
+            return;
+        }
+        loop {
+            let _ = conn.process(Duration::from_secs(3600));
+        }
+    });
+}

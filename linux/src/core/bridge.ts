@@ -31,6 +31,9 @@ export interface BootInfo {
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
 
+  /** Colours the Mochi button in the GNOME top bar: idle | working | attention. */
+  setShellStatus: (status: string) => call<void>("set_shell_status", { status }),
+
   saveSettings: (settings: Settings) => call<void>("save_settings", { settings }),
 
   /** Shrink the window down to the invisible wake strip (hidden) or back to full. */

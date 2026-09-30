@@ -52,6 +52,33 @@ async function main() {
 
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
 
+  // The Mochi button in the GNOME top bar replaces the invisible wake strip:
+  // hovering it peeks, clicking it opens or closes the island.
+  await onEvent<string>("shell", (what) => {
+    if (State.paused) return;
+    if (what === "hover") {
+      // Peek: compact island, which hides again unless the pointer moves onto it.
+      island.reveal();
+    } else if (what === "click") {
+      if (State.mode === "expanded") island.collapse();
+      else island.alert(State.defaultView());
+    }
+  });
+
+  // Mirror what Claude Code is doing onto that button, only when it changes.
+  let shellStatus = "";
+  State.subscribe(() => {
+    const status = State.pendingApproval
+      ? "attention"
+      : State.tasks.some((t) => !t.isIntegration && t.state !== "idle")
+        ? "working"
+        : "idle";
+    if (status !== shellStatus) {
+      shellStatus = status;
+      void Bridge.setShellStatus(status);
+    }
+  });
+
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
     State.settings = { ...State.settings, ...s };

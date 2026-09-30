@@ -89,8 +89,9 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     island::apply_geometry(&app, &pref, collapsed);
-    // The wake strip must always take the mouse, and a resize invalidates the flag.
-    island::set_ignore_cursor(&app, false);
+    // Hidden, the window takes no input at all: waking goes through the Mochi
+    // button in the top bar (shell.rs), so nothing sits under the clock.
+    island::set_ignore_cursor(&app, collapsed);
     shared.gate.forget_ignore_state();
     shared.gate.set_active(!collapsed);
 }
@@ -99,6 +100,11 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
 #[tauri::command]
 fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
     shared.gate.set_rect(island::IslandRect { x, y, w: width, h: height });
+}
+
+#[tauri::command]
+fn set_shell_status(status: String) {
+    shell::set_status(&status);
 }
 
 #[tauri::command]
@@ -358,6 +364,7 @@ pub fn run() {
             save_settings,
             set_collapsed,
             set_island_rect,
+            set_shell_status,
             focus_window,
             reposition,
             open_url,
@@ -392,6 +399,25 @@ pub fn run() {
                 island::apply_geometry(&handle, &loaded.screen, false);
                 let _ = win.show();
             }
+            // The Shell only sees the window once it is mapped, which is some time
+            // after show(): keep asking until the extension finds it (or give up
+            // after ~5 s — no extension, nothing to wait for).
+            let placer = handle.clone();
+            let pref = loaded.screen.clone();
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let collapsed = placer.state::<Shared>().gate.collapsed.load(Ordering::Relaxed);
+                    let (w, h) = if collapsed {
+                        (island::STRIP_W, island::STRIP_H)
+                    } else {
+                        (island::PANEL_W, island::PANEL_H)
+                    };
+                    if shell::place(w, h, &pref) {
+                        break;
+                    }
+                }
+            });
             gate.collapsed.store(false, Ordering::Relaxed);
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
@@ -399,6 +425,7 @@ pub fn run() {
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
+            shell::listen(handle.clone());
             integrations::start(handle.clone());
             Ok(())
         })

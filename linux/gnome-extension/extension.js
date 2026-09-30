@@ -2,11 +2,17 @@
 //
 // Wayland does not let an application place its own windows, keep them above
 // the others, or read the pointer outside them. The Shell can, so this
-// extension does exactly those three things for the Coucou app, over D-Bus on
-// the Shell's own bus name. Nothing runs while Coucou is closed: every method
-// is a direct call, there are no timers and no polling here.
+// extension does those things for the Coucou app, over D-Bus on the Shell's own
+// bus name. It also puts a small Mochi button in the top bar, next to the clock:
+// hovering it peeks at the island, clicking opens or closes it, and its colour
+// says what Claude Code is doing. That button replaces the invisible hover
+// strip, which used to sit right under the clock and steal its clicks.
+// Nothing runs while Coucou is closed: no timers, no polling.
 
+import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -35,6 +41,14 @@ const IFACE = `
       <arg type="u" direction="in" name="pid"/>
       <arg type="b" direction="out" name="ok"/>
     </method>
+    <method name="SetStatus">
+      <arg type="u" direction="in" name="pid"/>
+      <arg type="s" direction="in" name="status"/>
+    </method>
+    <signal name="Activated">
+      <arg type="u" name="pid"/>
+      <arg type="s" name="what"/>
+    </signal>
     <method name="Pointer">
       <arg type="u" direction="in" name="pid"/>
       <arg type="b" direction="out" name="found"/>
@@ -45,8 +59,99 @@ const IFACE = `
   </interface>
 </node>`;
 
+// idle | working | attention → body colour of the mini Mochi.
+const STATUS_COLOURS = {
+    idle: [0.93, 0.93, 0.95],
+    working: [0.55, 0.78, 1.0],
+    attention: [1.0, 0.72, 0.3],
+};
+const HOVER_DELAY_MS = 150;
+
+class MochiButton {
+    constructor(onActivate) {
+        this._status = 'idle';
+        this._hoverId = 0;
+        this._area = new St.DrawingArea({width: 22, height: 18, y_align: Clutter.ActorAlign.CENTER});
+        this._area.connect('repaint', area => this._draw(area));
+        this.actor = new St.Button({
+            style_class: 'panel-button',
+            reactive: true,
+            track_hover: true,
+            can_focus: true,
+            child: this._area,
+            accessible_name: 'Coucou',
+        });
+        this.actor.connect('clicked', () => {
+            this._cancelHover();
+            onActivate('click');
+        });
+        this.actor.connect('notify::hover', () => {
+            this._cancelHover();
+            if (!this.actor.hover)
+                return;
+            this._hoverId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, HOVER_DELAY_MS, () => {
+                this._hoverId = 0;
+                if (this.actor.hover)
+                    onActivate('hover');
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+        this.actor.hide();
+        // Right of the clock, so the date menu keeps the middle of the bar.
+        Main.panel._centerBox.add_child(this.actor);
+    }
+
+    _cancelHover() {
+        if (this._hoverId) {
+            GLib.source_remove(this._hoverId);
+            this._hoverId = 0;
+        }
+    }
+
+    setStatus(status) {
+        if (!(status in STATUS_COLOURS) || status === this._status)
+            return;
+        this._status = status;
+        this._area.queue_repaint();
+    }
+
+    _draw(area) {
+        const cr = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const [r, g, b] = STATUS_COLOURS[this._status];
+        // Soft squircle body.
+        const x = 2, y = 1, bw = w - 4, bh = h - 2, rad = 6;
+        cr.newSubPath();
+        cr.arc(x + bw - rad, y + rad, rad, -Math.PI / 2, 0);
+        cr.arc(x + bw - rad, y + bh - rad, rad, 0, Math.PI / 2);
+        cr.arc(x + rad, y + bh - rad, rad, Math.PI / 2, Math.PI);
+        cr.arc(x + rad, y + rad, rad, Math.PI, 1.5 * Math.PI);
+        cr.closePath();
+        cr.setSourceRGB(r, g, b);
+        cr.fill();
+        // Eyes.
+        cr.setSourceRGB(0.08, 0.08, 0.1);
+        for (const ex of [w / 2 - 4, w / 2 + 4]) {
+            cr.newSubPath();
+            cr.arc(ex, h / 2, 1.8, 0, 2 * Math.PI);
+            cr.fill();
+        }
+        cr.$dispose();
+    }
+
+    destroy() {
+        this._cancelHover();
+        this.actor.destroy();
+    }
+}
+
 class CoucouService {
     constructor() {
+        this._ownerPid = 0;
+        this._button = new MochiButton(what => {
+            if (this._ownerPid)
+                this.emit?.('Activated', this._ownerPid, what);
+        });
         // pid → MetaWindow of the island, and the last placement asked for, so a
         // window that maps after the request still lands in the right spot.
         this._windows = new Map();
@@ -57,6 +162,7 @@ class CoucouService {
 
     destroy() {
         global.display.disconnect(this._createdId);
+        this._button.destroy();
         for (const actor of global.get_window_actors()) {
             actor.disconnectObject(this);
             actor.meta_window?.disconnectObject(this);
@@ -85,19 +191,24 @@ class CoucouService {
         if (!win)
             return null;
         this._windows.set(pid, win);
-        win.connectObject('unmanaged', () => this._windows.delete(pid), this);
+        this._ownerPid = pid;
+        this._button.actor.show();
+        win.connectObject('unmanaged', () => {
+            this._windows.delete(pid);
+            if (this._ownerPid === pid) {
+                this._ownerPid = 0;
+                this._button.actor.hide();
+            }
+        }, this);
         return win;
     }
 
     _onWindowCreated(win) {
-        const pid = win.get_pid();
-        if (!this._pending.has(pid))
+        if (!this._pending.has(win.get_pid()))
             return;
-        // Title and size arrive with the first frame on Wayland.
-        const actor = win.get_compositor_private();
-        if (!actor)
-            return;
-        actor.connectObject('first-frame', () => {
+        // On Wayland the title and the actor only exist once the window maps.
+        win.connectObject('shown', () => {
+            const pid = win.get_pid();
             const want = this._pending.get(pid);
             if (want && this._isIsland(win, pid))
                 this._apply(win, want);
@@ -141,6 +252,11 @@ class CoucouService {
         return true;
     }
 
+    SetStatus(pid, status) {
+        if (pid === this._ownerPid)
+            this._button.setStatus(status);
+    }
+
     Pointer(pid) {
         const win = this._find(pid);
         if (!win)
@@ -156,6 +272,8 @@ export default class CoucouExtension extends Extension {
         this._service = new CoucouService();
         this._dbus = Gio.DBusExportedObject.wrapJSObject(IFACE, this._service);
         this._dbus.export(Gio.DBus.session, OBJECT_PATH);
+        this._service.emit = (name, pid, what) =>
+            this._dbus?.emit_signal(name, new GLib.Variant('(us)', [pid, what]));
     }
 
     disable() {
