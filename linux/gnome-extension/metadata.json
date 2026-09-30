@@ -1,0 +1,8 @@
+{
+  "uuid": "coucou@ryanthemechanic.github.io",
+  "name": "Coucou",
+  "description": "Companion for the Coucou app: keeps Mochi's island at the top centre of the screen, above other windows, and tells it where the pointer is. Does nothing unless Coucou is running.",
+  "shell-version": ["48", "49", "50"],
+  "url": "https://github.com/ryanthemechanic/coucou",
+  "version": 1
+}

@@ -1,0 +1,27 @@
+[package]
+name = "coucou"
+description = "Coucou for Linux (Fedora/GNOME) — Mochi lives at the top of your screen"
+authors = ["Louis Raille"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "coucou_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Talks to the GNOME Shell extension (placement, pointer) on the session bus.
+dbus = "0.9"
+libc = "0.2"

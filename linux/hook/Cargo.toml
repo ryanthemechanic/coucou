@@ -1,0 +1,16 @@
+[package]
+name = "coucou-hook"
+description = "Relays Claude Code hook events to Coucou over a Unix socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "coucou-hook"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+# Just enough libc to check who is serving the socket.
+libc = "0.2"
